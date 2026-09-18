@@ -275,6 +275,9 @@ fork(void)
   }
   np->sz = p->sz;
 
+  //添加的追踪掩码继承语句
+  np->trace_mask = p->trace_mask;
+
   np->parent = p;
 
   // copy saved user registers.
