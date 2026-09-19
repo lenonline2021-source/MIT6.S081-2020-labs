@@ -121,6 +121,20 @@ found:
     return 0;
   }
 
+  p->kpagetable = proc_kvminit();
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  uint64 va = KSTACK((int)(p - proc));
+  if(mappages(p->kpagetable, va, PGSIZE, (uint64)kvmpa(va), PTE_R | PTE_W) != 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -141,6 +155,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kpagetable)
+    proc_freekpagetable(p->kpagetable);
+  p->kpagetable = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -193,6 +210,21 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+void
+proc_freekpagetable(pagetable_t kpagetable)
+{
+  for(int i = 0; i < 512; i++) {
+    uint64 pte = kpagetable[i];
+    if(pte & PTE_V) {
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+        proc_freekpagetable((pagetable_t) PTE2PA(pte));
+      }
+      kpagetable[i] = 0;
+    }
+  }
+  kfree((void*) kpagetable);
 }
 
 // a user program that calls exec("/init")
@@ -473,8 +505,11 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
 
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
