@@ -182,7 +182,7 @@ proc_pagetable(struct proc *p)
   // to/from user space, so not PTE_U.
   if(mappages(pagetable, TRAMPOLINE, PGSIZE,
               (uint64)trampoline, PTE_R | PTE_X) < 0){
-    uvmfree(pagetable, 0, 0);
+    uvmfree(pagetable, 0);
     return 0;
   }
 
@@ -190,7 +190,7 @@ proc_pagetable(struct proc *p)
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-    uvmfree(pagetable, 0, 0);
+    uvmfree(pagetable, 0);
     return 0;
   }
 
@@ -226,6 +226,9 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  if(sz > 0)
+    uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
+  freewalk(pagetable);
 }
 
 void
@@ -267,6 +270,8 @@ userinit(void)
   // allocate one user page and copy init's instructions
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
+  if(mappages(p->kpagetable, 0, PGSIZE, (uint64)walkaddr(p->pagetable, 0),PTE_W|PTE_R|PTE_X) != 0)
+    panic("userinit: kpagetable");
   p->sz = PGSIZE;
 
   // prepare for the very first "return" from kernel to user.
