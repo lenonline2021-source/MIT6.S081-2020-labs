@@ -20,6 +20,8 @@ static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
+extern char etext[];
+extern pagetable_t kernel_pagetable;
 
 // initialize the proc table at boot time.
 void
@@ -38,7 +40,7 @@ procinit(void)
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      kvmmap(kernel_pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
   }
   kvminithart();
@@ -121,15 +123,8 @@ found:
     return 0;
   }
 
-  p->kpagetable = proc_kvminit();
+  p->kpagetable = proc_kpagetable(p);
   if(p->kpagetable == 0){
-    freeproc(p);
-    release(&p->lock);
-    return 0;
-  }
-
-  uint64 va = KSTACK((int)(p - proc));
-  if(mappages(p->kpagetable, va, PGSIZE, (uint64)kvmpa(va), PTE_R | PTE_W) != 0){
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -187,7 +182,7 @@ proc_pagetable(struct proc *p)
   // to/from user space, so not PTE_U.
   if(mappages(pagetable, TRAMPOLINE, PGSIZE,
               (uint64)trampoline, PTE_R | PTE_X) < 0){
-    uvmfree(pagetable, 0);
+    uvmfree(pagetable, 0, 0);
     return 0;
   }
 
@@ -195,11 +190,33 @@ proc_pagetable(struct proc *p)
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-    uvmfree(pagetable, 0);
+    uvmfree(pagetable, 0, 0);
     return 0;
   }
 
   return pagetable;
+}
+
+pagetable_t
+proc_kpagetable(struct proc *p)
+{
+  pagetable_t kpagetable;
+  
+  kpagetable = (pagetable_t) kalloc();
+  if(kpagetable == 0)
+    return 0;
+  memset(kpagetable, 0, PGSIZE);
+
+  kvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  kvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  kvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  kvmmap(kpagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  kvmmap(kpagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  kvmmap(kpagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  kvmmap(kpagetable, TRAPFRAME, (uint64)(p->trapframe), PGSIZE, PTE_R | PTE_W);
+  kvmmap(kpagetable, p->kstack, (uint64)kvmpa(p->kstack), PGSIZE, PTE_R | PTE_W);
+
+  return kpagetable;
 }
 
 // Free a process's page table, and free the
@@ -209,7 +226,6 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
-  uvmfree(pagetable, sz);
 }
 
 void
@@ -275,11 +291,11 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((sz = uvmalloc(p->pagetable, p->kpagetable, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc(p->pagetable, p->kpagetable, sz, sz + n);
   }
   p->sz = sz;
   return 0;
@@ -300,7 +316,7 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, np->kpagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
