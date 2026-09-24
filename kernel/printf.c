@@ -139,16 +139,15 @@ backtrace()
 {
   uint64 fp;
   uint64 retn;
-  printf("backtrace:\n");
-  fp = r_fp();
 
+  fp = r_fp();
   uint64 top = PGROUNDUP(fp);
   uint64 bottom = PGROUNDDOWN(fp);
 
+  printf("backtrace:\n");
   do {
-    retn = *(uint64*)((char*)fp - 8);
+    retn = *(uint64*)(fp - 8);
     printf("%p\n", retn);
-
-    fp = *(uint64*)((char*)fp - 16);
+    fp = *(uint64*)(fp - 16);
   } while (fp >= bottom && fp < top);
 }
